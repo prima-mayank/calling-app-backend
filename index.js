@@ -12,7 +12,24 @@ dotenv.config();
 
 const app = express();
 
-app.use(cors());
+const isOriginAllowed = (origin) => {
+  if (!origin) return true;
+  if (ServerConfig.ALLOWED_ORIGINS.includes("*")) return true;
+  return ServerConfig.ALLOWED_ORIGINS.includes(origin);
+};
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (isOriginAllowed(origin)) {
+        callback(null, true);
+        return;
+      }
+      callback(new Error("CORS origin blocked"));
+    },
+    methods: ["GET", "POST"],
+  })
+);
 app.use(express.json());
 
 app.get("/health", (req, res) => {
@@ -23,12 +40,31 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
+    origin: (origin, callback) => {
+      if (isOriginAllowed(origin)) {
+        callback(null, true);
+        return;
+      }
+      callback(new Error("CORS origin blocked"));
+    },
+    methods: ["GET", "POST"],
   },
-  transports: ["polling"],
-  allowUpgrades: false,
+  transports: ["websocket", "polling"],
+  allowUpgrades: true,
   maxHttpBufferSize: 8 * 1024 * 1024
+});
+
+io.use((socket, next) => {
+  if (!ServerConfig.REMOTE_CONTROL_TOKEN) {
+    return next();
+  }
+
+  const token = String(socket.handshake?.auth?.token || "").trim();
+  if (token !== ServerConfig.REMOTE_CONTROL_TOKEN) {
+    return next(new Error("unauthorized"));
+  }
+
+  return next();
 });
 
 io.on("connection", (socket) => {
