@@ -25,7 +25,9 @@ coverage/
 # Environment files
 .env
 .env.local
+.env.*
 .env.*.local
+!.env.example
 
 # IDE / editor
 .vscode/
@@ -39,3 +41,5 @@ Thumbs.db
 .serverless/
 .parcel-cache/
 
+
+config/serverConfig.js

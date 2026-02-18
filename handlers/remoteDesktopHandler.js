@@ -272,10 +272,7 @@ const remoteDesktopHandler = (io, socket) => {
 
     const roomId = sanitizeString(socket.data?.roomId, 128);
     if (!roomId) {
-      emitSessionError(
-        "Join a room before requesting remote control.",
-        "room-required"
-      );
+      emitSessionError("Join a room before requesting remote control.", "room-required");
       return;
     }
 
@@ -332,9 +329,9 @@ const remoteDesktopHandler = (io, socket) => {
 
     const request = pendingRequests.get(sanitizedRequestId);
     if (!request) return;
+
     const decisionByHostAgent = request.hostSocketId === socket.id;
     const decisionByRoomParticipant = request.approverSocketId === socket.id;
-
     if (!decisionByHostAgent && !decisionByRoomParticipant) return;
 
     clearPendingRequest(sanitizedRequestId);
@@ -342,8 +339,7 @@ const remoteDesktopHandler = (io, socket) => {
     if (!accepted) {
       emitToSocket(request.controllerSocketId, "remote-session-error", {
         message:
-          sanitizeString(reason, 256) ||
-          "Remote control request was rejected by host.",
+          sanitizeString(reason, 256) || "Remote control request was rejected by host.",
         code: "request-rejected",
       });
       return;
@@ -367,9 +363,7 @@ const remoteDesktopHandler = (io, socket) => {
     }
 
     const controllerSocket = io.sockets.sockets.get(request.controllerSocketId);
-    if (!controllerSocket) {
-      return;
-    }
+    if (!controllerSocket) return;
 
     const existingControllerSession = controllerSocket.data?.controllerSessionId;
     if (existingControllerSession && sessions.get(existingControllerSession)) {
@@ -524,3 +518,4 @@ const remoteDesktopHandler = (io, socket) => {
 };
 
 export default remoteDesktopHandler;
+

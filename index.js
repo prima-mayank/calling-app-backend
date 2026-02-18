@@ -5,6 +5,7 @@ import { Server } from "socket.io";
 import http from "http";
 import cors from "cors";
 import { ExpressPeerServer } from "peer";
+// Keep path casing consistent with the on-disk filename (Linux/Render is case-sensitive).
 import roomHandler from "./handlers/roomHandler.js";
 import remoteDesktopHandler from "./handlers/remoteDesktopHandler.js";
 
@@ -73,8 +74,8 @@ io.on("connection", (socket) => {
   roomHandler(socket);
   remoteDesktopHandler(io, socket);
 
-  socket.on("disconnect", () => {
-    console.log("User disconnected:", socket.id);
+  socket.on("disconnect", (reason) => {
+    console.log("User disconnected:", socket.id, "reason:", reason);
   });
 });
 
