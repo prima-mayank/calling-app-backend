@@ -132,17 +132,71 @@ const resolveSessionForSocket = (socket, requestedSessionId) => {
 const remoteDesktopHandler = (io, socket) => {
   const allowSameMachineRemote =
     String(process.env.ALLOW_SAME_MACHINE_REMOTE || "").trim() === "1";
-  const logRemote = () => {};
+  const remoteDebugEnabled = String(process.env.REMOTE_DEBUG || "").trim() === "1";
+  const logRemote = (eventName, payload = {}) => {
+    if (!remoteDebugEnabled) return;
+    const normalizedEventName = sanitizeString(eventName, 64) || "event";
+    console.log(`[remote] ${normalizedEventName}`, {
+      socketId: socket.id,
+      roomId: sanitizeString(socket.data?.roomId, 128) || "",
+      ...payload,
+    });
+  };
+  const remoteTrafficStats = new Map();
+  const resolveHostOwnershipForSocket = (hostId, targetSocketId, targetRoomId) => {
+    const claim = hostClaims.get(hostId);
+    if (!claim?.socketId) return "unclaimed";
 
-  const getAvailableHosts = () => {
+    const claimSocket = io.sockets.sockets.get(claim.socketId);
+    if (!claimSocket) {
+      hostClaims.delete(hostId);
+      return "unclaimed";
+    }
+
+    const normalizedClaimRoomId = sanitizeString(claim.roomId, 128);
+    if (!normalizedClaimRoomId || !targetRoomId || normalizedClaimRoomId !== targetRoomId) {
+      return "unclaimed";
+    }
+
+    return claim.socketId === targetSocketId ? "you" : "other";
+  };
+  const markSessionTraffic = (sessionId, bucket) => {
+    if (!remoteDebugEnabled || !sessionId || !bucket) return;
+    const now = Date.now();
+    const stats = remoteTrafficStats.get(sessionId) || {
+      framesForwarded: 0,
+      inputsForwarded: 0,
+      lastLoggedAt: 0,
+    };
+
+    if (bucket === "frame") stats.framesForwarded += 1;
+    if (bucket === "input") stats.inputsForwarded += 1;
+
+    if (now - stats.lastLoggedAt >= 2_000) {
+      logRemote("session-traffic", {
+        sessionId,
+        framesForwarded: stats.framesForwarded,
+        inputsForwarded: stats.inputsForwarded,
+      });
+      stats.lastLoggedAt = now;
+    }
+
+    remoteTrafficStats.set(sessionId, stats);
+  };
+
+  const getAvailableHosts = (targetSocketId) => {
+    const targetSocket = targetSocketId ? io.sockets.sockets.get(targetSocketId) : null;
+    const targetRoomId = sanitizeString(targetSocket?.data?.roomId, 128);
     const result = [];
     for (const [hostId, host] of hosts.entries()) {
       if (!host?.socketId || !io.sockets.sockets.get(host.socketId)) {
         continue;
       }
+      const ownership = resolveHostOwnershipForSocket(hostId, targetSocketId, targetRoomId);
       result.push({
         hostId,
         busy: !!host.activeSessionId,
+        ownership,
       });
     }
     return result.sort((a, b) => a.hostId.localeCompare(b.hostId));
@@ -150,7 +204,7 @@ const remoteDesktopHandler = (io, socket) => {
 
   const emitHostsListToSocket = (targetSocketId) => {
     if (!targetSocketId) return;
-    const hostsList = getAvailableHosts();
+    const hostsList = getAvailableHosts(targetSocketId);
     logRemote("emit-hosts-list-to-socket", {
       targetSocketId,
       count: hostsList.length,
@@ -163,15 +217,9 @@ const remoteDesktopHandler = (io, socket) => {
   };
 
   const broadcastHostsList = () => {
-    const hostsList = getAvailableHosts();
-    logRemote("broadcast-hosts-list", {
-      count: hostsList.length,
-      hosts: hostsList,
-    });
-    io.emit("remote-hosts-list", {
-      hosts: hostsList,
-      timestamp: Date.now(),
-    });
+    const targetSocketIds = Array.from(io.sockets.sockets.keys());
+    logRemote("broadcast-hosts-list", { count: targetSocketIds.length });
+    targetSocketIds.forEach((targetSocketId) => emitHostsListToSocket(targetSocketId));
   };
 
   const emitSessionError = (message, code = "bad-request") => {
@@ -263,12 +311,15 @@ const remoteDesktopHandler = (io, socket) => {
   };
 
   const clearClaimsForSocket = (socketId) => {
+    let clearedClaimsCount = 0;
     for (const [hostId, claim] of hostClaims.entries()) {
       if (claim?.socketId === socketId) {
         logRemote("clear-host-claim", { hostId, claimSocketId: socketId });
         hostClaims.delete(hostId);
+        clearedClaimsCount += 1;
       }
     }
+    return clearedClaimsCount;
   };
 
   const resolveClaimedApproverSocketId = (hostId, roomId) => {
@@ -318,6 +369,7 @@ const remoteDesktopHandler = (io, socket) => {
     logRemote("end-session", { sessionId, endedBy, hostId: session.hostId });
 
     sessions.delete(sessionId);
+    remoteTrafficStats.delete(sessionId);
 
     const host = hosts.get(session.hostId);
     if (host && host.activeSessionId === sessionId) {
@@ -460,6 +512,7 @@ const remoteDesktopHandler = (io, socket) => {
     logRemote("claim-host-success", { hostId: sanitizedHostId, roomId });
 
     socket.emit("remote-host-claimed", { hostId: sanitizedHostId, roomId });
+    broadcastHostsList();
   };
 
   const resolveRoomParticipantSockets = (roomId) => {
@@ -910,6 +963,7 @@ const remoteDesktopHandler = (io, socket) => {
       height: normalizedHeight,
       timestamp: Number.isFinite(Number(timestamp)) ? Number(timestamp) : Date.now(),
     });
+    markSessionTraffic(sanitizedSessionId, "frame");
   };
 
   const receiveControllerInput = ({ sessionId, event }) => {
@@ -927,6 +981,7 @@ const remoteDesktopHandler = (io, socket) => {
       sessionId: sanitizedSessionId,
       event: sanitizedEvent,
     });
+    markSessionTraffic(sanitizedSessionId, "input");
   };
 
   const handleDisconnect = () => {
@@ -950,7 +1005,9 @@ const remoteDesktopHandler = (io, socket) => {
       broadcastHostsList();
     }
 
-    clearClaimsForSocket(socket.id);
+    if (clearClaimsForSocket(socket.id) > 0) {
+      broadcastHostsList();
+    }
 
     const pendingRequestId = socket.data?.pendingRemoteRequestId;
     if (pendingRequestId && pendingRequests.get(pendingRequestId)) {
@@ -1010,7 +1067,9 @@ const remoteDesktopHandler = (io, socket) => {
   socket.on("remote-host-frame", receiveHostFrame);
   socket.on("remote-input", receiveControllerInput);
   socket.on("leave-room", () => {
-    clearClaimsForSocket(socket.id);
+    if (clearClaimsForSocket(socket.id) > 0) {
+      broadcastHostsList();
+    }
 
     const pendingHostSetupRequestId = socket.data?.pendingHostSetupRequestId;
     if (
