@@ -69,14 +69,8 @@ io.use((socket, next) => {
 });
 
 io.on("connection", (socket) => {
-  console.log("New user connected:", socket.id);
-
   roomHandler(socket);
   remoteDesktopHandler(io, socket);
-
-  socket.on("disconnect", (reason) => {
-    console.log("User disconnected:", socket.id, "reason:", reason);
-  });
 });
 
 process.on("uncaughtException", err => {
@@ -99,7 +93,5 @@ server.on("error", (err) => {
 });
 
 server.listen(ServerConfig.PORT, "0.0.0.0", () => {
-  console.log(`Server running on port ${ServerConfig.PORT}`);
-  console.log(`Socket.IO available at ws://localhost:${ServerConfig.PORT}`);
-  console.log(`PeerJS available at http://localhost:${ServerConfig.PORT}/peerjs/myapp`);
+  // Server started.
 });

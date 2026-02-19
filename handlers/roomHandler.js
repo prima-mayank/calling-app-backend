@@ -9,21 +9,10 @@ import { v4 as UUIDv4 } from "uuid";
 const rooms = {};
 
 const roomHandler = (socket) => {
-  const debugRooms = String(process.env.DEBUG_ROOMS || "").trim() === "1";
   const autoCreateOnJoin =
     String(process.env.ROOM_AUTO_CREATE_ON_JOIN || "").trim() !== "0";
 
-  const logRoom = (event, details = {}) => {
-    if (!debugRooms) return;
-    const payload = {
-      event,
-      socketId: socket.id,
-      socketRoomId: socket.data?.roomId || null,
-      socketPeerId: socket.data?.peerId || null,
-      ...details,
-    };
-    console.log("[rooms]", JSON.stringify(payload));
-  };
+  const logRoom = () => {};
 
   const isUuidLike = (value) => {
     if (typeof value !== "string") return false;
