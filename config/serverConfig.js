@@ -21,4 +21,5 @@ export default {
   PORT: Number.isFinite(parsedPort) && parsedPort > 0 ? parsedPort : 5000,
   ALLOWED_ORIGINS: parseAllowedOrigins(process.env.CORS_ORIGINS),
   REMOTE_CONTROL_TOKEN: String(process.env.REMOTE_CONTROL_TOKEN || "").trim(),
+  HOST_APP_LOCAL_ZIP_PATH: String(process.env.HOST_APP_LOCAL_ZIP_PATH || "").trim(),
 };

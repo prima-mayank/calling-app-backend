@@ -4,6 +4,7 @@ import ServerConfig from "./config/serverConfig.js";
 import { Server } from "socket.io";
 import http from "http";
 import cors from "cors";
+import fs from "fs";
 import { ExpressPeerServer } from "peer";
 // Keep path casing consistent with the on-disk filename (Linux/Render is case-sensitive).
 import roomHandler from "./handlers/roomHandler.js";
@@ -35,6 +36,27 @@ app.use(express.json());
 
 app.get("/health", (req, res) => {
   res.send("OK");
+});
+
+app.get("/downloads/host-app-win.zip", (req, res) => {
+  const zipPath = String(ServerConfig.HOST_APP_LOCAL_ZIP_PATH || "").trim();
+  if (!zipPath) {
+    res.status(404).json({
+      error: "local-host-app-unconfigured",
+      message: "Local host app zip path is not configured on backend.",
+    });
+    return;
+  }
+
+  if (!fs.existsSync(zipPath)) {
+    res.status(404).json({
+      error: "local-host-app-missing",
+      message: "Configured local host app zip file was not found on backend.",
+    });
+    return;
+  }
+
+  res.download(zipPath, "host-app-win.zip");
 });
 
 const server = http.createServer(app);
