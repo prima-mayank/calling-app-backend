@@ -12,8 +12,6 @@ const roomHandler = (socket) => {
   const autoCreateOnJoin =
     String(process.env.ROOM_AUTO_CREATE_ON_JOIN || "").trim() !== "0";
 
-  const logRoom = () => {};
-
   const isUuidLike = (value) => {
     if (typeof value !== "string") return false;
     const v = value.trim();
@@ -58,11 +56,6 @@ const roomHandler = (socket) => {
     const roomSocketIds = socket.nsp?.adapter?.rooms?.get(roomId);
     const hasSocketsInRoom = !!roomSocketIds && roomSocketIds.size > 0;
     if (room.participants.length === 0 && !hasSocketsInRoom) {
-      logRoom("prune-delete-room", {
-        roomId,
-        participants: room.participants.length,
-        socketsInAdapterRoom: roomSocketIds ? roomSocketIds.size : 0,
-      });
       delete rooms[roomId];
     }
   };
@@ -100,7 +93,6 @@ const roomHandler = (socket) => {
         // noop: leaving should be best-effort
       })
       .finally(() => {
-        logRoom("leave-room", { roomId, peerId: peerId || null });
         pruneRoomState(roomId);
       });
 
@@ -119,11 +111,6 @@ const roomHandler = (socket) => {
     // immediately emits `joined-room` (which can prune empty rooms).
     await socket.join(roomId);
     socket.data.roomId = roomId;
-    logRoom("create-room", {
-      roomId,
-      roomsCount: Object.keys(rooms).length,
-      socketsInAdapterRoom: socket.nsp?.adapter?.rooms?.get(roomId)?.size || 0,
-    });
     socket.emit("room-created", { roomId });
   };
 
@@ -136,12 +123,7 @@ const roomHandler = (socket) => {
       if (autoCreateOnJoin && isUuidLike(normalizedRoomId)) {
         rooms[normalizedRoomId] = createRoomState();
         room = rooms[normalizedRoomId];
-        logRoom("auto-create-room-on-join", { roomId: normalizedRoomId });
       } else {
-        logRoom("joined-room-not-found", {
-          roomId: normalizedRoomId,
-          peerId: peerId || null,
-        });
         socket.emit("room-not-found");
         return;
       }
@@ -199,13 +181,6 @@ const roomHandler = (socket) => {
     socket.data.roomId = normalizedRoomId;
     socket.data.peerId = peerId;
 
-    logRoom("joined-room", {
-      roomId: normalizedRoomId,
-      peerId,
-      participants: room.participants.length,
-      socketsInAdapterRoom:
-        socket.nsp?.adapter?.rooms?.get(normalizedRoomId)?.size || 0,
-    });
     socket.emit("get-users", {
       roomId: normalizedRoomId,
       participants: room.participants,
