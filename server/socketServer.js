@@ -2,9 +2,14 @@ import { Server } from "socket.io";
 import ServerConfig from "../config/serverConfig.js";
 import roomHandler from "../handlers/roomHandler.js";
 import remoteDesktopHandler from "../handlers/remoteDesktopHandler.js";
+import createDirectCallHandler from "../handlers/directCallHandler.js";
+import { createPresenceHandler } from "../handlers/presenceHandler.js";
+import { resolveSocketAuthenticatedUser } from "./socketAuth.js";
 import { createCorsOptions } from "./corsPolicy.js";
 
-export const createSocketServer = (server) => {
+export const createSocketServer = (server, options = {}) => {
+  const { authRuntime = null, presenceStore = null } = options;
+
   const io = new Server(server, {
     cors: createCorsOptions(),
     transports: ["websocket", "polling"],
@@ -26,8 +31,48 @@ export const createSocketServer = (server) => {
   });
 
   io.on("connection", (socket) => {
+    const resolvedAuthUser = resolveSocketAuthenticatedUser({
+      socket,
+      authRuntime,
+    });
+
+    if (presenceStore && resolvedAuthUser.userId) {
+      socket.data.authUserId = resolvedAuthUser.userId;
+      socket.data.authEmail = resolvedAuthUser.email;
+      presenceStore.register({
+        userId: resolvedAuthUser.userId,
+        socketId: socket.id,
+      });
+    }
+
+    const presenceHandler = createPresenceHandler({
+      io,
+      socket,
+      presenceStore: presenceStore || {
+        getOnlineUserIds: () => [],
+        unregisterSocket: () => "",
+      },
+    });
+
+    if (resolvedAuthUser.userId) {
+      presenceHandler.handleAuthenticatedConnect();
+    }
+
     roomHandler(socket);
     remoteDesktopHandler(io, socket);
+    createDirectCallHandler({
+      io,
+      socket,
+      presenceStore: presenceStore || {
+        getSocketIdsForUser: () => [],
+        unregisterSocket: () => "",
+      },
+      authRuntime: authRuntime || {
+        getUserById: async () => null,
+      },
+    });
+
+    socket.on("disconnect", presenceHandler.handleDisconnect);
   });
 
   return io;
