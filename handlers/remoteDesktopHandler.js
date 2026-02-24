@@ -1,136 +1,22 @@
-import { v4 as UUIDv4 } from "uuid";
-
-// hostId => { socketId, activeSessionId }
-const hosts = new Map();
-// sessionId => { hostId, hostSocketId, controllerSocketId }
-const sessions = new Map();
-// requestId => { requestId, hostId, hostSocketId, controllerSocketId, requesterId, roomId, approverSocketId, timeoutId }
-const pendingRequests = new Map();
-// requestId => { requestId, requesterSocketId, requesterPeerId, targetSocketId, targetPeerId, roomId, suggestedHostId, timeoutId }
-const pendingHostSetupRequests = new Map();
-// hostId => { hostId, targetSocketId, roomId, timeoutId }
-const hostSetupAssignments = new Map();
-// hostId => { socketId, roomId }
-const hostClaims = new Map();
-const REMOTE_REQUEST_TIMEOUT_MS = 45_000;
-const HOST_SETUP_REQUEST_TIMEOUT_MS = 45_000;
-const HOST_SETUP_ASSIGNMENT_TIMEOUT_MS = 15 * 60_000;
-
-const sanitizeString = (value, maxLength = 128) => {
-  if (typeof value !== "string") return "";
-  return value.trim().slice(0, maxLength);
-};
-
-const buildSuggestedHostId = (peerId) => {
-  const normalizedPeerId = sanitizeString(peerId, 64).replace(/[^a-zA-Z0-9_-]/g, "");
-  const suffix = normalizedPeerId.slice(0, 20) || UUIDv4().slice(0, 8);
-  return `host-${suffix}`;
-};
-
-const getSocketNetworkId = (socket) => {
-  const forwardedForRaw = String(socket?.handshake?.headers?.["x-forwarded-for"] || "").trim();
-  const forwardedFor = forwardedForRaw.split(",")[0]?.trim() || "";
-  const address = String(socket?.handshake?.address || "").trim();
-  const candidate = forwardedFor || address;
-  if (!candidate) return "";
-  const normalized = candidate.toLowerCase();
-  if (
-    normalized === "::1" ||
-    normalized === "127.0.0.1" ||
-    normalized === "::ffff:127.0.0.1"
-  ) {
-    return "loopback-local";
-  }
-  return normalized;
-};
-
-const isLikelyPrivateOrLocalNetworkId = (networkId) => {
-  const id = String(networkId || "").toLowerCase().trim();
-  if (!id) return false;
-  if (id === "loopback-local") return true;
-
-  const plain = id.startsWith("::ffff:") ? id.slice(7) : id;
-  if (/^10\./.test(plain)) return true;
-  if (/^192\.168\./.test(plain)) return true;
-  if (/^169\.254\./.test(plain)) return true;
-  if (/^172\.(1[6-9]|2\d|3[0-1])\./.test(plain)) return true;
-  if (/^(fc|fd)[0-9a-f]{2}:/.test(plain)) return true;
-  return false;
-};
-
-const pointerTypes = new Set(["move", "click", "mouse-down", "mouse-up", "wheel"]);
-const keyTypes = new Set(["key-down", "key-up"]);
-
-const sanitizeRemoteEvent = (event) => {
-  if (!event || typeof event !== "object") return null;
-
-  const type = sanitizeString(event.type, 24);
-  if (!pointerTypes.has(type) && !keyTypes.has(type)) return null;
-
-  const sanitized = { type };
-
-  if (pointerTypes.has(type)) {
-    const x = Number(event.x);
-    const y = Number(event.y);
-    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
-
-    sanitized.x = Math.min(1, Math.max(0, x));
-    sanitized.y = Math.min(1, Math.max(0, y));
-  }
-
-  if (type === "click" || type === "mouse-down" || type === "mouse-up") {
-    sanitized.button =
-      event.button === "right" || event.button === "middle" ? event.button : "left";
-  }
-
-  if (type === "wheel") {
-    const deltaX = Number(event.deltaX);
-    const deltaY = Number(event.deltaY);
-    sanitized.deltaX = Number.isFinite(deltaX) ? deltaX : 0;
-    sanitized.deltaY = Number.isFinite(deltaY) ? deltaY : 0;
-  }
-
-  if (keyTypes.has(type)) {
-    const key = sanitizeString(event.key, 64);
-    const code = sanitizeString(event.code, 64);
-    if (!key && !code) return null;
-
-    sanitized.key = key;
-    sanitized.code = code;
-    sanitized.repeat = !!event.repeat;
-  }
-
-  return sanitized;
-};
-
-const resolveSessionForSocket = (socket, requestedSessionId) => {
-  const sessionId = sanitizeString(requestedSessionId, 64);
-  if (sessionId) {
-    const session = sessions.get(sessionId);
-    if (!session) return { sessionId: "", session: null };
-    return { sessionId, session };
-  }
-
-  const hostId = socket.data?.remoteHostId;
-  if (hostId) {
-    const host = hosts.get(hostId);
-    if (host?.activeSessionId) {
-      const activeSession = sessions.get(host.activeSessionId);
-      return { sessionId: host.activeSessionId, session: activeSession || null };
-    }
-  }
-
-  const controllerSessionId = socket.data?.controllerSessionId;
-  if (controllerSessionId) {
-    const controllerSession = sessions.get(controllerSessionId);
-    return {
-      sessionId: controllerSessionId,
-      session: controllerSession || null,
-    };
-  }
-
-  return { sessionId: "", session: null };
-};
+﻿import { v4 as UUIDv4 } from "uuid";
+import {
+  HOST_SETUP_REQUEST_TIMEOUT_MS,
+  REMOTE_REQUEST_TIMEOUT_MS,
+  hostClaims,
+  hosts,
+  pendingHostSetupRequests,
+  pendingRequests,
+  sessions,
+} from "./remoteDesktop/state.js";
+import {
+  buildSuggestedHostId,
+  getSocketNetworkId,
+  isLikelyPrivateOrLocalNetworkId,
+  resolveSessionForSocket,
+  sanitizeRemoteEvent,
+  sanitizeString,
+} from "./remoteDesktop/utils.js";
+import { createRemoteDesktopRuntime } from "./remoteDesktop/runtime.js";
 
 const remoteDesktopHandler = (io, socket) => {
   const allowSameMachineRemote =
@@ -145,393 +31,29 @@ const remoteDesktopHandler = (io, socket) => {
       ...payload,
     });
   };
-  const remoteTrafficStats = new Map();
-  const resolveHostOwnershipForSocket = (hostId, targetSocketId, targetRoomId) => {
-    const claim = hostClaims.get(hostId);
-    if (!claim?.socketId) return "unclaimed";
-
-    const claimSocket = io.sockets.sockets.get(claim.socketId);
-    if (!claimSocket) {
-      hostClaims.delete(hostId);
-      return "unclaimed";
-    }
-
-    const normalizedClaimRoomId = sanitizeString(claim.roomId, 128);
-    if (!normalizedClaimRoomId || !targetRoomId || normalizedClaimRoomId !== targetRoomId) {
-      return "unclaimed";
-    }
-
-    return claim.socketId === targetSocketId ? "you" : "other";
-  };
-  const markSessionTraffic = (sessionId, bucket) => {
-    if (!remoteDebugEnabled || !sessionId || !bucket) return;
-    const now = Date.now();
-    const stats = remoteTrafficStats.get(sessionId) || {
-      framesForwarded: 0,
-      inputsForwarded: 0,
-      lastLoggedAt: 0,
-    };
-
-    if (bucket === "frame") stats.framesForwarded += 1;
-    if (bucket === "input") stats.inputsForwarded += 1;
-
-    if (now - stats.lastLoggedAt >= 2_000) {
-      logRemote("session-traffic", {
-        sessionId,
-        framesForwarded: stats.framesForwarded,
-        inputsForwarded: stats.inputsForwarded,
-      });
-      stats.lastLoggedAt = now;
-    }
-
-    remoteTrafficStats.set(sessionId, stats);
-  };
-
-  const getAvailableHosts = (targetSocketId) => {
-    const targetSocket = targetSocketId ? io.sockets.sockets.get(targetSocketId) : null;
-    const targetRoomId = sanitizeString(targetSocket?.data?.roomId, 128);
-    const result = [];
-    for (const [hostId, host] of hosts.entries()) {
-      if (!host?.socketId || !io.sockets.sockets.get(host.socketId)) {
-        continue;
-      }
-      const ownership = resolveHostOwnershipForSocket(hostId, targetSocketId, targetRoomId);
-      result.push({
-        hostId,
-        busy: !!host.activeSessionId,
-        ownership,
-      });
-    }
-    return result.sort((a, b) => a.hostId.localeCompare(b.hostId));
-  };
-
-  const emitHostsListToSocket = (targetSocketId) => {
-    if (!targetSocketId) return;
-    const hostsList = getAvailableHosts(targetSocketId);
-    logRemote("emit-hosts-list-to-socket", {
-      targetSocketId,
-      count: hostsList.length,
-      hosts: hostsList,
-    });
-    io.to(targetSocketId).emit("remote-hosts-list", {
-      hosts: hostsList,
-      timestamp: Date.now(),
-    });
-  };
-
-  const broadcastHostsList = () => {
-    const targetSocketIds = Array.from(io.sockets.sockets.keys());
-    logRemote("broadcast-hosts-list", { count: targetSocketIds.length });
-    targetSocketIds.forEach((targetSocketId) => emitHostsListToSocket(targetSocketId));
-  };
-
-  const emitSessionError = (message, code = "bad-request") => {
-    socket.emit("remote-session-error", { message, code });
-  };
-
-  const emitToSocket = (socketId, eventName, payload) => {
-    if (!socketId) return;
-    io.to(socketId).emit(eventName, payload);
-  };
-
-  const clearPendingRequest = (requestId, options = {}) => {
-    const request = pendingRequests.get(requestId);
-    if (!request) return null;
-    logRemote("clear-pending-request", {
-      requestId,
-      hostId: request.hostId,
-      controllerSocketId: request.controllerSocketId,
-      approverSocketId: request.approverSocketId,
-      options,
-    });
-
-    if (request.timeoutId) {
-      clearTimeout(request.timeoutId);
-    }
-
-    pendingRequests.delete(requestId);
-
-    const controllerSocket = io.sockets.sockets.get(request.controllerSocketId);
-    if (controllerSocket?.data?.pendingRemoteRequestId === requestId) {
-      delete controllerSocket.data.pendingRemoteRequestId;
-    }
-
-    const hostSocket = io.sockets.sockets.get(request.hostSocketId);
-    if (hostSocket?.data?.pendingRemoteRequestId === requestId) {
-      delete hostSocket.data.pendingRemoteRequestId;
-    }
-
-    if (options.notifyController) {
-      emitToSocket(request.controllerSocketId, "remote-session-error", {
-        message: options.controllerMessage || "Remote request was cancelled.",
-        code: options.controllerCode || "request-cancelled",
-      });
-    }
-
-    if (options.notifyHost) {
-      emitToSocket(request.hostSocketId, "remote-session-error", {
-        message: options.hostMessage || "Remote request was cancelled.",
-        code: options.hostCode || "request-cancelled",
-      });
-    }
-
-    return request;
-  };
-
-  const clearHostSetupRequest = (requestId, options = {}) => {
-    const request = pendingHostSetupRequests.get(requestId);
-    if (!request) return null;
-
-    if (request.timeoutId) {
-      clearTimeout(request.timeoutId);
-    }
-
-    pendingHostSetupRequests.delete(requestId);
-
-    const requesterSocket = io.sockets.sockets.get(request.requesterSocketId);
-    if (requesterSocket?.data?.pendingHostSetupRequestId === requestId) {
-      delete requesterSocket.data.pendingHostSetupRequestId;
-    }
-
-    const targetSocket = io.sockets.sockets.get(request.targetSocketId);
-    if (targetSocket?.data?.incomingHostSetupRequestId === requestId) {
-      delete targetSocket.data.incomingHostSetupRequestId;
-    }
-
-    if (options.notifyRequester) {
-      emitToSocket(request.requesterSocketId, "remote-host-setup-result", {
-        requestId,
-        status: sanitizeString(options.status, 24) || "failed",
-        targetPeerId: request.targetPeerId,
-        suggestedHostId: request.suggestedHostId,
-        message:
-          sanitizeString(options.message, 256) ||
-          "Host setup request was cancelled.",
-      });
-    }
-
-    return request;
-  };
-
-  const clearHostSetupAssignment = (hostId) => {
-    const normalizedHostId = sanitizeString(hostId, 64);
-    if (!normalizedHostId) return null;
-
-    const assignment = hostSetupAssignments.get(normalizedHostId);
-    if (!assignment) return null;
-
-    if (assignment.timeoutId) {
-      clearTimeout(assignment.timeoutId);
-    }
-
-    hostSetupAssignments.delete(normalizedHostId);
-    return assignment;
-  };
-
-  const setHostSetupAssignment = ({ hostId, targetSocketId, roomId }) => {
-    const normalizedHostId = sanitizeString(hostId, 64);
-    const normalizedRoomId = sanitizeString(roomId, 128);
-    if (!normalizedHostId || !targetSocketId || !normalizedRoomId) {
-      return null;
-    }
-
-    clearHostSetupAssignment(normalizedHostId);
-
-    const assignment = {
-      hostId: normalizedHostId,
-      targetSocketId,
-      roomId: normalizedRoomId,
-      timeoutId: null,
-    };
-
-    assignment.timeoutId = setTimeout(() => {
-      const activeAssignment = hostSetupAssignments.get(normalizedHostId);
-      if (!activeAssignment || activeAssignment.targetSocketId !== targetSocketId) {
-        return;
-      }
-      clearHostSetupAssignment(normalizedHostId);
-      logRemote("host-setup-assignment-expired", {
-        hostId: normalizedHostId,
-        roomId: normalizedRoomId,
-        targetSocketId,
-      });
-    }, HOST_SETUP_ASSIGNMENT_TIMEOUT_MS);
-
-    hostSetupAssignments.set(normalizedHostId, assignment);
-    logRemote("host-setup-assignment-set", {
-      hostId: normalizedHostId,
-      roomId: normalizedRoomId,
-      targetSocketId,
-    });
-    return assignment;
-  };
-
-  const resolveActiveHostSetupAssignment = (hostId, roomId = "") => {
-    const normalizedHostId = sanitizeString(hostId, 64);
-    if (!normalizedHostId) return null;
-
-    const assignment = hostSetupAssignments.get(normalizedHostId);
-    if (!assignment) return null;
-
-    const requestedRoomId = sanitizeString(roomId, 128);
-    if (requestedRoomId && assignment.roomId !== requestedRoomId) {
-      return null;
-    }
-
-    const targetSocket = io.sockets.sockets.get(assignment.targetSocketId);
-    if (!targetSocket) {
-      clearHostSetupAssignment(normalizedHostId);
-      logRemote("host-setup-assignment-cleared-offline-target", {
-        hostId: normalizedHostId,
-      });
-      return null;
-    }
-
-    const targetSocketRoomId = sanitizeString(targetSocket.data?.roomId, 128);
-    if (!targetSocketRoomId || targetSocketRoomId !== assignment.roomId) {
-      clearHostSetupAssignment(normalizedHostId);
-      logRemote("host-setup-assignment-cleared-room-mismatch", {
-        hostId: normalizedHostId,
-        assignmentRoomId: assignment.roomId,
-        targetSocketRoomId,
-      });
-      return null;
-    }
-
-    return assignment;
-  };
-
-  const clearHostSetupAssignmentsForSocket = (socketId) => {
-    let clearedCount = 0;
-    for (const [hostId, assignment] of hostSetupAssignments.entries()) {
-      if (assignment?.targetSocketId === socketId) {
-        clearHostSetupAssignment(hostId);
-        clearedCount += 1;
-      }
-    }
-    return clearedCount;
-  };
-
-  const clearClaimsForSocket = (socketId) => {
-    let clearedClaimsCount = 0;
-    for (const [hostId, claim] of hostClaims.entries()) {
-      if (claim?.socketId === socketId) {
-        logRemote("clear-host-claim", { hostId, claimSocketId: socketId });
-        hostClaims.delete(hostId);
-        clearedClaimsCount += 1;
-      }
-    }
-    return clearedClaimsCount;
-  };
-
-  const resolveClaimedApproverSocketId = (hostId, roomId) => {
-    const claim = hostClaims.get(hostId);
-    if (!claim) return "";
-
-    if (claim.roomId !== roomId) {
-      hostClaims.delete(hostId);
-      logRemote("resolve-approver-claim-room-mismatch", {
-        hostId,
-        requestedRoomId: roomId,
-        claimRoomId: claim.roomId,
-      });
-      return "";
-    }
-
-    const claimedSocket = io.sockets.sockets.get(claim.socketId);
-    if (!claimedSocket) {
-      hostClaims.delete(hostId);
-      logRemote("resolve-approver-claim-socket-offline", { hostId });
-      return "";
-    }
-
-    if (sanitizeString(claimedSocket.data?.roomId, 128) !== roomId) {
-      hostClaims.delete(hostId);
-      logRemote("resolve-approver-claim-socket-room-mismatch", {
-        hostId,
-        requestedRoomId: roomId,
-        socketRoomId: sanitizeString(claimedSocket.data?.roomId, 128) || "",
-      });
-      return "";
-    }
-
-    return claim.socketId;
-  };
-
-  const tryAutoClaimHostOwner = ({ hostId }) => {
-    const normalizedHostId = sanitizeString(hostId, 64);
-    if (!normalizedHostId) return false;
-
-    const assignment = resolveActiveHostSetupAssignment(normalizedHostId);
-    if (!assignment) {
-      logRemote("auto-claim-host-skipped", {
-        hostId: normalizedHostId,
-        reason: "no-active-assignment",
-      });
-      return false;
-    }
-
-    hostClaims.set(normalizedHostId, {
-      socketId: assignment.targetSocketId,
-      roomId: assignment.roomId,
-    });
-    emitToSocket(assignment.targetSocketId, "remote-host-claimed", {
-      hostId: normalizedHostId,
-      roomId: assignment.roomId,
-      auto: true,
-    });
-    clearHostSetupAssignment(normalizedHostId);
-    logRemote("auto-claim-host-success", {
-      hostId: normalizedHostId,
-      ownerSocketId: assignment.targetSocketId,
-      roomId: assignment.roomId,
-      source: "host-setup-assignment",
-    });
-    return true;
-  };
-
-  const hasPendingRequestForHost = (hostId) => {
-    for (const request of pendingRequests.values()) {
-      if (request.hostId === hostId) return true;
-    }
-    return false;
-  };
-
-  const endSession = (sessionId, endedBy) => {
-    const session = sessions.get(sessionId);
-    if (!session) return;
-    logRemote("end-session", { sessionId, endedBy, hostId: session.hostId });
-
-    sessions.delete(sessionId);
-    remoteTrafficStats.delete(sessionId);
-
-    const host = hosts.get(session.hostId);
-    if (host && host.activeSessionId === sessionId) {
-      host.activeSessionId = "";
-      hosts.set(session.hostId, host);
-    }
-
-    const payload = {
-      sessionId,
-      hostId: session.hostId,
-      endedBy: sanitizeString(endedBy, 64),
-    };
-
-    io.to(session.hostSocketId).emit("remote-session-ended", payload);
-    io.to(session.controllerSocketId).emit("remote-session-ended", payload);
-
-    const hostSocket = io.sockets.sockets.get(session.hostSocketId);
-    if (hostSocket?.data) {
-      delete hostSocket.data.hostSessionId;
-    }
-
-    const controllerSocket = io.sockets.sockets.get(session.controllerSocketId);
-    if (controllerSocket?.data) {
-      delete controllerSocket.data.controllerSessionId;
-    }
-
-    broadcastHostsList();
-  };
+  const {
+    markSessionTraffic,
+    emitHostsListToSocket,
+    broadcastHostsList,
+    emitSessionError,
+    emitToSocket,
+    clearPendingRequest,
+    clearHostSetupRequest,
+    clearHostSetupAssignment,
+    setHostSetupAssignment,
+    resolveActiveHostSetupAssignment,
+    clearHostSetupAssignmentsForSocket,
+    clearClaimsForSocket,
+    resolveClaimedApproverSocketId,
+    tryAutoClaimHostOwner,
+    hasPendingRequestForHost,
+    endSession,
+  } = createRemoteDesktopRuntime({
+    io,
+    socket,
+    logRemote,
+    remoteDebugEnabled,
+  });
 
   const registerRemoteHost = ({ hostId }) => {
     const sanitizedHostId = sanitizeString(hostId, 64);
@@ -1275,3 +797,5 @@ const remoteDesktopHandler = (io, socket) => {
 };
 
 export default remoteDesktopHandler;
+
+
