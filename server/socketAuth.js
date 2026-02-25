@@ -4,12 +4,12 @@ const normalizeToken = (value) => String(value || "").trim();
 
 export const resolveSocketAuthenticatedUser = ({ socket, authRuntime }) => {
   if (!authRuntime?.enabled || !authRuntime?.jwtSecret) {
-    return { userId: "", email: "" };
+    return { userId: "", email: "", displayName: "" };
   }
 
   const accessToken = normalizeToken(socket.handshake?.auth?.accessToken);
   if (!accessToken) {
-    return { userId: "", email: "" };
+    return { userId: "", email: "", displayName: "" };
   }
 
   try {
@@ -20,8 +20,9 @@ export const resolveSocketAuthenticatedUser = ({ socket, authRuntime }) => {
     return {
       userId: String(decoded?.sub || "").trim(),
       email: String(decoded?.email || "").trim().toLowerCase(),
+      displayName: String(decoded?.displayName || "").trim(),
     };
   } catch {
-    return { userId: "", email: "" };
+    return { userId: "", email: "", displayName: "" };
   }
 };

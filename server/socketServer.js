@@ -39,6 +39,7 @@ export const createSocketServer = (server, options = {}) => {
     if (presenceStore && resolvedAuthUser.userId) {
       socket.data.authUserId = resolvedAuthUser.userId;
       socket.data.authEmail = resolvedAuthUser.email;
+      socket.data.authDisplayName = String(resolvedAuthUser.displayName || "").trim();
       presenceStore.register({
         userId: resolvedAuthUser.userId,
         socketId: socket.id,

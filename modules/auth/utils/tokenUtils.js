@@ -1,10 +1,17 @@
 import jwt from "jsonwebtoken";
 
-export const createAccessToken = ({ userId, email, secret, expiresIn }) => {
+export const createAccessToken = ({
+  userId,
+  email,
+  displayName = "",
+  secret,
+  expiresIn,
+}) => {
   return jwt.sign(
     {
       sub: userId,
       email,
+      displayName: String(displayName || "").trim(),
       type: "access",
     },
     secret,

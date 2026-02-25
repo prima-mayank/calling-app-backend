@@ -4,7 +4,8 @@ import { v4 as UUIDv4 } from "uuid";
 // roomId => {
 //   participants: string[],
 //   peerToSocket: Record<string, string>,
-//   socketToPeer: Record<string, string>
+//   socketToPeer: Record<string, string>,
+//   peerProfiles: Record<string, { displayName: string, email: string, label: string }>
 // }
 const rooms = {};
 
@@ -25,7 +26,44 @@ const roomHandler = (socket) => {
     participants: [],
     peerToSocket: {},
     socketToPeer: {},
+    peerProfiles: {},
   });
+
+  const normalizeProfileText = (value, limit = 128) =>
+    String(value || "")
+      .trim()
+      .slice(0, limit);
+
+  const buildPeerProfileFromSocket = (targetSocket, peerId) => {
+    const displayName = normalizeProfileText(targetSocket?.data?.authDisplayName, 128);
+    const email = normalizeProfileText(targetSocket?.data?.authEmail, 128);
+    const fallbackPeerId = normalizeProfileText(peerId, 64);
+    const label = displayName || email || fallbackPeerId;
+    return {
+      displayName,
+      email,
+      label,
+    };
+  };
+
+  const buildParticipantProfilesPayload = (room) => {
+    if (!room) return {};
+
+    const payload = {};
+    room.participants.forEach((peerId) => {
+      const normalizedPeerId = String(peerId || "").trim();
+      if (!normalizedPeerId) return;
+      const profile = room.peerProfiles?.[normalizedPeerId] || {};
+      const displayName = normalizeProfileText(profile.displayName, 128);
+      const email = normalizeProfileText(profile.email, 128);
+      payload[normalizedPeerId] = {
+        displayName,
+        email,
+        label: normalizeProfileText(profile.label, 128) || displayName || email || normalizedPeerId,
+      };
+    });
+    return payload;
+  };
 
   const isSocketActive = (socketId) =>
     !!socketId && socket.nsp?.sockets?.has(socketId);
@@ -50,6 +88,12 @@ const roomHandler = (socket) => {
       const peerSocketId = room.peerToSocket[peerId];
       return !!peerSocketId && isSocketActive(peerSocketId);
     });
+    const activeParticipantSet = new Set(room.participants);
+    Object.keys(room.peerProfiles || {}).forEach((peerId) => {
+      if (!activeParticipantSet.has(peerId)) {
+        delete room.peerProfiles[peerId];
+      }
+    });
 
     // Only delete the room if it's truly empty (no participants AND no sockets currently joined).
     // A brand new room starts with 0 participants until the creator emits `joined-room`.
@@ -72,6 +116,7 @@ const roomHandler = (socket) => {
     room.participants = room.participants.filter((id) => id !== peerId);
     delete room.peerToSocket[peerId];
     delete room.socketToPeer[socketId];
+    delete room.peerProfiles[peerId];
 
     socket.to(roomId).emit("user-left", { peerId });
     // Do not delete the room here. A room can have 0 participants temporarily
@@ -177,6 +222,7 @@ const roomHandler = (socket) => {
 
     room.peerToSocket[peerId] = socket.id;
     room.socketToPeer[socket.id] = peerId;
+    room.peerProfiles[peerId] = buildPeerProfileFromSocket(socket, peerId);
 
     socket.data.roomId = normalizedRoomId;
     socket.data.peerId = peerId;
@@ -184,6 +230,7 @@ const roomHandler = (socket) => {
     socket.emit("get-users", {
       roomId: normalizedRoomId,
       participants: room.participants,
+      participantProfiles: buildParticipantProfilesPayload(room),
     });
   };
 
@@ -194,7 +241,10 @@ const roomHandler = (socket) => {
     if (!rooms[roomId]) return;
     if (rooms[roomId].socketToPeer[socket.id] !== peerId) return;
 
-    socket.to(roomId).emit("user-joined", { peerId });
+    socket.to(roomId).emit("user-joined", {
+      peerId,
+      participantProfile: buildPeerProfileFromSocket(socket, peerId),
+    });
   };
 
   socket.on("create-room", createRoom);

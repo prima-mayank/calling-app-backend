@@ -31,6 +31,15 @@ const remoteDesktopHandler = (io, socket) => {
       ...payload,
     });
   };
+  const resolveParticipantLabel = (targetSocket, fallbackId = "") => {
+    const displayName = sanitizeString(targetSocket?.data?.authDisplayName, 128);
+    if (displayName) return displayName;
+    const email = sanitizeString(targetSocket?.data?.authEmail, 128);
+    if (email) return email;
+    const peerId = sanitizeString(targetSocket?.data?.peerId, 64);
+    if (peerId) return peerId;
+    return sanitizeString(fallbackId, 64) || "participant";
+  };
   const {
     markSessionTraffic,
     emitHostsListToSocket,
@@ -277,13 +286,20 @@ const remoteDesktopHandler = (io, socket) => {
     }
 
     const requestId = UUIDv4();
+    const targetPeerLabel = resolveParticipantLabel(
+      selectedParticipant.socket,
+      selectedParticipant.peerId
+    );
+    const requesterLabel = resolveParticipantLabel(socket, requesterPeerId);
     const suggestedHostId = buildSuggestedHostId(selectedParticipant.peerId);
     const request = {
       requestId,
       requesterSocketId: socket.id,
       requesterPeerId,
+      requesterLabel,
       targetSocketId: selectedParticipant.socket.id,
       targetPeerId: selectedParticipant.peerId,
+      targetPeerLabel,
       roomId,
       suggestedHostId,
       timeoutId: null,
@@ -304,12 +320,14 @@ const remoteDesktopHandler = (io, socket) => {
     emitToSocket(socket.id, "remote-host-setup-pending", {
       requestId,
       targetPeerId: request.targetPeerId,
+      targetPeerLabel: request.targetPeerLabel,
       suggestedHostId,
     });
 
     emitToSocket(selectedParticipant.socket.id, "remote-host-setup-requested", {
       requestId,
       requesterId: requesterPeerId,
+      requesterLabel: request.requesterLabel,
       targetPeerId: request.targetPeerId,
       suggestedHostId,
     });
@@ -479,12 +497,15 @@ const remoteDesktopHandler = (io, socket) => {
     }
 
     const requestId = UUIDv4();
+    const requesterId = sanitizeString(socket.data?.peerId || socket.id, 64);
+    const requesterLabel = resolveParticipantLabel(socket, requesterId);
     const request = {
       requestId,
       hostId: sanitizedHostId,
       hostSocketId: host.socketId,
       controllerSocketId: socket.id,
-      requesterId: sanitizeString(socket.data?.peerId || socket.id, 64),
+      requesterId,
+      requesterLabel,
       roomId,
       approverSocketId: resolvedApproverSocketId,
       timeoutId: null,
@@ -516,6 +537,7 @@ const remoteDesktopHandler = (io, socket) => {
       requestId,
       hostId: sanitizedHostId,
       requesterId: request.requesterId,
+      requesterLabel: request.requesterLabel,
     });
   };
 

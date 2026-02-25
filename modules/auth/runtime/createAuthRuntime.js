@@ -22,6 +22,7 @@ export const createAuthRuntime = ({ dbState }) => {
     createAccessToken({
       userId: user.id,
       email: user.email,
+      displayName: user.displayName,
       secret: AuthConfig.AUTH_JWT_SECRET,
       expiresIn: AuthConfig.AUTH_JWT_EXPIRES_IN,
     });

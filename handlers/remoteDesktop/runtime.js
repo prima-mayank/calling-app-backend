@@ -7,7 +7,7 @@ import {
   pendingRequests,
   sessions,
 } from "./state.js";
-import { sanitizeString } from "./utils.js";
+import { sanitizeString, resolveParticipantLabel } from "./utils.js";
 
 export const createRemoteDesktopRuntime = ({
   io,
@@ -67,11 +67,16 @@ export const createRemoteDesktopRuntime = ({
       if (!host?.socketId || !io.sockets.sockets.get(host.socketId)) {
         continue;
       }
+      const hostSocket = io.sockets.sockets.get(host.socketId);
       const ownership = resolveHostOwnershipForSocket(hostId, targetSocketId, targetRoomId);
+      // compute a friendly label for the host based on any authenticated user data
+      // stored on the socket; fallback to hostId.
+      const label = resolveParticipantLabel(hostSocket, hostId);
       result.push({
         hostId,
         busy: !!host.activeSessionId,
         ownership,
+        label,
       });
     }
     return result.sort((a, b) => a.hostId.localeCompare(b.hostId));

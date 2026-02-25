@@ -6,6 +6,19 @@ export const sanitizeString = (value, maxLength = 128) => {
   return value.trim().slice(0, maxLength);
 };
 
+// helper used across remote-desktop handling to produce a human‑friendly label
+// for any socket (host or participant).  falls back to hostId when nothing else
+// is available.  this mirrors the logic previously embedded in the handler.
+export const resolveParticipantLabel = (targetSocket, fallbackId = "") => {
+  const displayName = sanitizeString(targetSocket?.data?.authDisplayName, 128);
+  if (displayName) return displayName;
+  const email = sanitizeString(targetSocket?.data?.authEmail, 128);
+  if (email) return email;
+  const peerId = sanitizeString(targetSocket?.data?.peerId, 64);
+  if (peerId) return peerId;
+  return sanitizeString(fallbackId, 64) || "participant";
+};
+
 export const buildSuggestedHostId = (peerId) => {
   const normalizedPeerId = sanitizeString(peerId, 64).replace(/[^a-zA-Z0-9_-]/g, "");
   const suffix = normalizedPeerId.slice(0, 20) || UUIDv4().slice(0, 8);
