@@ -35,11 +35,11 @@ const startServer = async () => {
   app.use("/peerjs", peerServer);
   registerServerLifecycle({ server, port: ServerConfig.PORT });
 
-  server.listen(ServerConfig.PORT, "127.0.0.1", () => {
+  server.listen(ServerConfig.PORT, "0.0.0.0", () => {
     const authStatus = authRuntime.enabled
       ? "enabled"
       : `disabled (${authRuntime.disableReason || "unknown"})`;
-    console.log(`[server] listening on 127.0.0.1:${ServerConfig.PORT}`);
+    console.log(`[server] listening on 0.0.0.0:${ServerConfig.PORT}`);
     console.log(`[auth] ${authStatus}`);
   });
 };
