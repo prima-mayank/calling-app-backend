@@ -2,9 +2,11 @@ import fs from "fs";
 import ServerConfig from "../config/serverConfig.js";
 import { createAuthRouter } from "../modules/auth/routes/authRoutes.js";
 import { createUserRouter } from "../modules/users/routes/userRoutes.js";
+import { createSummarizeRouter } from "../modules/summarizer/routes/summarizeRoutes.js";
 
 export const registerHttpRoutes = (app, options = {}) => {
   const { authRuntime = null, presenceStore = null } = options;
+  app.use("/api", createSummarizeRouter());
 
   app.get("/health", (req, res) => {
     res.send("OK");
