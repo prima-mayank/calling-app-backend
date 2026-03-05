@@ -12,6 +12,7 @@ import {
   buildSuggestedHostId,
   getSocketNetworkId,
   isLikelyPrivateOrLocalNetworkId,
+  resolveParticipantLabel,
   resolveSessionForSocket,
   sanitizeRemoteEvent,
   sanitizeString,
@@ -30,15 +31,6 @@ const remoteDesktopHandler = (io, socket) => {
       roomId: sanitizeString(socket.data?.roomId, 128) || "",
       ...payload,
     });
-  };
-  const resolveParticipantLabel = (targetSocket, fallbackId = "") => {
-    const displayName = sanitizeString(targetSocket?.data?.authDisplayName, 128);
-    if (displayName) return displayName;
-    const email = sanitizeString(targetSocket?.data?.authEmail, 128);
-    if (email) return email;
-    const peerId = sanitizeString(targetSocket?.data?.peerId, 64);
-    if (peerId) return peerId;
-    return sanitizeString(fallbackId, 64) || "participant";
   };
   const {
     markSessionTraffic,

@@ -9,9 +9,11 @@ import { v4 as UUIDv4 } from "uuid";
 // }
 const rooms = {};
 
+// Server-wide setting — read once at module load, not per socket connection.
+const autoCreateOnJoin =
+  String(process.env.ROOM_AUTO_CREATE_ON_JOIN || "").trim() !== "0";
+
 const roomHandler = (socket) => {
-  const autoCreateOnJoin =
-    String(process.env.ROOM_AUTO_CREATE_ON_JOIN || "").trim() !== "0";
 
   const isUuidLike = (value) => {
     if (typeof value !== "string") return false;

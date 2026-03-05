@@ -3,6 +3,13 @@ import AuthConfig from "../../../config/authConfig.js";
 import { AuthServiceError } from "../AuthServiceError.js";
 import User from "../models/User.js";
 
+const MIN_PASSWORD_LENGTH = 8;
+
+// Pre-computed dummy hash used for constant-time comparison when a user is not found.
+// This prevents timing-based email enumeration: an attacker cannot tell the difference
+// between "user not found" and "wrong password" by measuring response time.
+const TIMING_DUMMY_HASH = await bcrypt.hash("timing-protection-dummy", AuthConfig.AUTH_BCRYPT_ROUNDS);
+
 const normalizeEmail = (value) => String(value || "").trim().toLowerCase();
 
 const normalizeDisplayName = (value) => {
@@ -18,11 +25,19 @@ const validateSignupPayload = ({ email, password, displayName }) => {
     });
   }
 
-  if (!String(password || "").length) {
+  const normalizedPassword = String(password || "");
+  if (!normalizedPassword.length) {
     throw new AuthServiceError("Password is required.", {
       status: 400,
       code: "password-required",
     });
+  }
+
+  if (normalizedPassword.length < MIN_PASSWORD_LENGTH) {
+    throw new AuthServiceError(
+      `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`,
+      { status: 400, code: "password-too-short" }
+    );
   }
 
   if (!displayName) {
@@ -70,6 +85,7 @@ export const createUserWithPassword = async ({ email, password, displayName }) =
 export const loginUserWithPassword = async ({ email, password }) => {
   const normalizedEmail = normalizeEmail(email);
   const normalizedPassword = String(password || "");
+
   if (!normalizedEmail || !normalizedPassword) {
     throw new AuthServiceError("Invalid email or password.", {
       status: 401,
@@ -78,15 +94,13 @@ export const loginUserWithPassword = async ({ email, password }) => {
   }
 
   const user = await User.findOne({ email: normalizedEmail }).select("+passwordHash");
-  if (!user?.passwordHash) {
-    throw new AuthServiceError("Invalid email or password.", {
-      status: 401,
-      code: "invalid-credentials",
-    });
-  }
 
-  const isPasswordValid = await bcrypt.compare(normalizedPassword, user.passwordHash);
-  if (!isPasswordValid) {
+  // Always run bcrypt.compare — even when user is not found — so response time is
+  // identical regardless of whether the email exists (prevents email enumeration).
+  const hashToCompare = user?.passwordHash ?? TIMING_DUMMY_HASH;
+  const isPasswordValid = await bcrypt.compare(normalizedPassword, hashToCompare);
+
+  if (!user || !isPasswordValid) {
     throw new AuthServiceError("Invalid email or password.", {
       status: 401,
       code: "invalid-credentials",

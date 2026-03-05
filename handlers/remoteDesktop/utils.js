@@ -26,10 +26,16 @@ export const buildSuggestedHostId = (peerId) => {
 };
 
 export const getSocketNetworkId = (socket) => {
-  const forwardedForRaw = String(socket?.handshake?.headers?.["x-forwarded-for"] || "").trim();
-  const forwardedFor = forwardedForRaw.split(",")[0]?.trim() || "";
   const address = String(socket?.handshake?.address || "").trim();
-  const candidate = forwardedFor || address;
+  // Only trust X-Forwarded-For when explicitly configured — trusting it by default
+  // lets a client spoof their IP and bypass the same-machine remote-desktop check.
+  const trustProxy = String(process.env.TRUST_PROXY || "").trim() === "1";
+  let candidate = address;
+  if (trustProxy) {
+    const forwardedForRaw = String(socket?.handshake?.headers?.["x-forwarded-for"] || "").trim();
+    const forwardedFor = forwardedForRaw.split(",")[0]?.trim() || "";
+    candidate = forwardedFor || address;
+  }
   if (!candidate) return "";
   const normalized = candidate.toLowerCase();
   if (

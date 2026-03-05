@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { Server } from "socket.io";
 import ServerConfig from "../config/serverConfig.js";
 import roomHandler from "../handlers/roomHandler.js";
@@ -23,7 +24,14 @@ export const createSocketServer = (server, options = {}) => {
     }
 
     const token = String(socket.handshake?.auth?.token || "").trim();
-    if (token !== ServerConfig.REMOTE_CONTROL_TOKEN) {
+    // Constant-time comparison prevents timing-based token enumeration.
+    const tokenBuf = Buffer.from(token);
+    const expectedBuf = Buffer.from(ServerConfig.REMOTE_CONTROL_TOKEN);
+    const tokenValid =
+      tokenBuf.length === expectedBuf.length &&
+      crypto.timingSafeEqual(tokenBuf, expectedBuf);
+
+    if (!tokenValid) {
       return next(new Error("unauthorized"));
     }
 
